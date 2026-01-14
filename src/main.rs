@@ -1,15 +1,10 @@
-mod cpu;
-mod display;
-mod keyboard;
-mod rom;
-
-use cpu::Cpu;
-use std::fs;
+mod chip8;
+use chip8::CPU;
 
 fn main() {
-    let mut cpu = Cpu::new();
+    let mut cpu = CPU::new();
 
-    cpu.execute_instruction(0x00E0);
+    // cpu.execute_instruction(0x00E0);
 
     // let rom_path = "roms/invaders.ch8";
     // let rom_data = fs::read(rom_path).expect("Failed to read ROM file");
