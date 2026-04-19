@@ -320,3 +320,395 @@ impl Emu {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn load_and_tick(emu: &mut Emu, opcodes: &[u16]) {
+        let bytes: Vec<u8> = opcodes
+            .iter()
+            .flat_map(|&op| [(op >> 8) as u8, op as u8])
+            .collect();
+        emu.load(&bytes);
+        for _ in opcodes {
+            emu.tick();
+        }
+    }
+
+    // --- 0x00E0: Clear screen ---
+    #[test]
+    fn test_clear_screen() {
+        let mut emu = Emu::new();
+        // Dirty the screen
+        emu.screen[0] = 1;
+        emu.screen[100] = 1;
+        load_and_tick(&mut emu, &[0x00E0]);
+        assert!(emu.screen.iter().all(|&p| p == 0));
+    }
+
+    // --- 0x00EE / 0x2NNN: call and return ---
+    #[test]
+    fn test_call_and_return() {
+        let mut emu = Emu::new();
+        // CALL 0x300 then RET
+        // Place RET at 0x300
+        emu.ram[0x300] = 0x00;
+        emu.ram[0x301] = 0xEE;
+        load_and_tick(&mut emu, &[0x2300]); // CALL 0x300 → pc=0x300, stack has 0x202
+        assert_eq!(emu.pc, 0x300);
+        emu.tick(); // RET → pc=0x202
+        assert_eq!(emu.pc, 0x202);
+        assert_eq!(emu.sp, 0);
+    }
+
+    // --- 0x1NNN: jump ---
+    #[test]
+    fn test_jump() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x1300]);
+        assert_eq!(emu.pc, 0x300);
+    }
+
+    // --- 0x3XNN: skip if VX == NN ---
+    #[test]
+    fn test_skip_if_vx_eq_nn_true() {
+        let mut emu = Emu::new();
+        // Set V1=0x42, then 3142 should skip
+        load_and_tick(&mut emu, &[0x6142, 0x3142]);
+        // After load+tick of 6142: pc=0x202; after 3142 with skip: pc=0x206
+        assert_eq!(emu.pc, START_ADDR + 6);
+    }
+
+    #[test]
+    fn test_skip_if_vx_eq_nn_false() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6100, 0x3142]);
+        assert_eq!(emu.pc, START_ADDR + 4);
+    }
+
+    // --- 0x4XNN: skip if VX != NN ---
+    #[test]
+    fn test_skip_if_vx_ne_nn() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6100, 0x4142]);
+        assert_eq!(emu.pc, START_ADDR + 6);
+    }
+
+    // --- 0x5XY0: skip if VX == VY ---
+    #[test]
+    fn test_skip_if_vx_eq_vy() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6142, 0x6242, 0x5120]);
+        assert_eq!(emu.pc, START_ADDR + 8);
+    }
+
+    // --- 0x6XNN: set VX = NN ---
+    #[test]
+    fn test_set_vx() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A42]);
+        assert_eq!(emu.v_reg[0xA], 0x42);
+    }
+
+    // --- 0x7XNN: VX += NN (wrapping) ---
+    #[test]
+    fn test_add_vx_nn() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A10, 0x7A05]);
+        assert_eq!(emu.v_reg[0xA], 0x15);
+    }
+
+    #[test]
+    fn test_add_vx_nn_wrapping() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6AFF, 0x7A01]);
+        assert_eq!(emu.v_reg[0xA], 0x00);
+    }
+
+    // --- 0x8XY0-7,E arithmetic/logic ---
+    #[test]
+    fn test_8xy0_assign() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A42, 0x8BA0]);
+        assert_eq!(emu.v_reg[0xB], 0x42);
+    }
+
+    #[test]
+    fn test_8xy1_or() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A0F, 0x6BF0, 0x8AB1]);
+        assert_eq!(emu.v_reg[0xA], 0xFF);
+    }
+
+    #[test]
+    fn test_8xy2_and() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6AFF, 0x6B0F, 0x8AB2]);
+        assert_eq!(emu.v_reg[0xA], 0x0F);
+    }
+
+    #[test]
+    fn test_8xy3_xor() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6AFF, 0x6BF0, 0x8AB3]);
+        assert_eq!(emu.v_reg[0xA], 0x0F);
+    }
+
+    #[test]
+    fn test_8xy4_add_no_carry() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A01, 0x6B02, 0x8AB4]);
+        assert_eq!(emu.v_reg[0xA], 3);
+        assert_eq!(emu.v_reg[VF], 0);
+    }
+
+    #[test]
+    fn test_8xy4_add_carry() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6AFF, 0x6B01, 0x8AB4]);
+        assert_eq!(emu.v_reg[0xA], 0);
+        assert_eq!(emu.v_reg[VF], 1);
+    }
+
+    #[test]
+    fn test_8xy5_sub_no_borrow() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A05, 0x6B03, 0x8AB5]);
+        assert_eq!(emu.v_reg[0xA], 2);
+        assert_eq!(emu.v_reg[VF], 1);
+    }
+
+    #[test]
+    fn test_8xy5_sub_borrow() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A01, 0x6B02, 0x8AB5]);
+        assert_eq!(emu.v_reg[0xA], 0xFF);
+        assert_eq!(emu.v_reg[VF], 0);
+    }
+
+    #[test]
+    fn test_8xy6_shr() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A06, 0x8A06]);
+        assert_eq!(emu.v_reg[0xA], 3);
+        assert_eq!(emu.v_reg[VF], 0);
+    }
+
+    #[test]
+    fn test_8xy6_shr_lsb() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A07, 0x8A06]);
+        assert_eq!(emu.v_reg[0xA], 3);
+        assert_eq!(emu.v_reg[VF], 1);
+    }
+
+    #[test]
+    fn test_8xye_shl() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A04, 0x8A0E]);
+        assert_eq!(emu.v_reg[0xA], 8);
+        assert_eq!(emu.v_reg[VF], 0);
+    }
+
+    #[test]
+    fn test_8xye_shl_msb() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A80, 0x8A0E]);
+        assert_eq!(emu.v_reg[0xA], 0);
+        assert_eq!(emu.v_reg[VF], 1);
+    }
+
+    #[test]
+    fn test_8xy7_subn_no_borrow() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A03, 0x6B05, 0x8AB7]);
+        assert_eq!(emu.v_reg[0xA], 2);
+        assert_eq!(emu.v_reg[VF], 1);
+    }
+
+    // --- 0x9XY0: skip if VX != VY ---
+    #[test]
+    fn test_9xy0_skip_if_ne() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A01, 0x6B02, 0x9AB0]);
+        assert_eq!(emu.pc, START_ADDR + 8);
+    }
+
+    // --- 0xANNN: set I ---
+    #[test]
+    fn test_set_i() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0xA123]);
+        assert_eq!(emu.i_reg, 0x123);
+    }
+
+    // --- 0xBNNN: jump V0 + NNN ---
+    #[test]
+    fn test_jump_v0() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6002, 0xB300]);
+        assert_eq!(emu.pc, 0x302);
+    }
+
+    // --- 0xFX07/15: delay timer ---
+    #[test]
+    fn test_delay_timer_set_get() {
+        let mut emu = Emu::new();
+        // Set V1=5, store to DT (F115), then load DT into V2 (F207)
+        load_and_tick(&mut emu, &[0x6105, 0xF115, 0xF207]);
+        assert_eq!(emu.v_reg[2], 5);
+    }
+
+    // --- tick_timers ---
+    #[test]
+    fn test_tick_timers_decrement() {
+        let mut emu = Emu::new();
+        emu.dt = 3;
+        emu.st = 2;
+        emu.tick_timers();
+        assert_eq!(emu.dt, 2);
+        assert_eq!(emu.st, 1);
+        emu.tick_timers();
+        assert_eq!(emu.dt, 1);
+        assert_eq!(emu.st, 0);
+        emu.tick_timers();
+        assert_eq!(emu.dt, 0);
+        assert_eq!(emu.st, 0); // should not underflow
+    }
+
+    // --- 0xFX18: sound timer ---
+    #[test]
+    fn test_sound_timer_set() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A07, 0xFA18]);
+        assert_eq!(emu.st, 7);
+    }
+
+    // --- 0xFX1E: I += VX ---
+    #[test]
+    fn test_i_add_vx() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0xA100, 0x6A05, 0xFA1E]);
+        assert_eq!(emu.i_reg, 0x105);
+    }
+
+    // --- 0xFX29: font sprite ---
+    #[test]
+    fn test_font_sprite() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0x6A03, 0xFA29]); // digit 3 → addr 15
+        assert_eq!(emu.i_reg, 15);
+    }
+
+    // --- 0xFX33: BCD ---
+    #[test]
+    fn test_bcd() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0xA300, 0x6A96, 0xFA33]); // V_A = 150
+        assert_eq!(emu.ram[0x300], 1);
+        assert_eq!(emu.ram[0x301], 5);
+        assert_eq!(emu.ram[0x302], 0);
+    }
+
+    // --- 0xFX55 / 0xFX65: store/load registers ---
+    #[test]
+    fn test_store_load_registers() {
+        let mut emu = Emu::new();
+        // Set V0=1, V1=2, V2=3, store regs 0..2, then clear and reload
+        let program: Vec<u16> = vec![
+            0x6001, 0x6102, 0x6203, // set V0-V2
+            0xA400, // I = 0x400
+            0xF255, // store V0-V2 at I
+            0x6000, 0x6100, 0x6200, // clear V0-V2
+            0xA400, // I = 0x400
+            0xF265, // load V0-V2 from I
+        ];
+        load_and_tick(&mut emu, &program);
+        assert_eq!(emu.v_reg[0], 1);
+        assert_eq!(emu.v_reg[1], 2);
+        assert_eq!(emu.v_reg[2], 3);
+    }
+
+    // --- 0xEX9E / 0xEXA1: key skip ---
+    #[test]
+    fn test_skip_if_key_pressed() {
+        let mut emu = Emu::new();
+        emu.keypress(5, true);
+        load_and_tick(&mut emu, &[0x6A05, 0xEA9E]);
+        assert_eq!(emu.pc, START_ADDR + 6);
+    }
+
+    #[test]
+    fn test_skip_if_key_not_pressed() {
+        let mut emu = Emu::new();
+        // key 5 is NOT pressed
+        load_and_tick(&mut emu, &[0x6A05, 0xEAA1]);
+        assert_eq!(emu.pc, START_ADDR + 6);
+    }
+
+    // --- 0xFX0A: wait for key ---
+    #[test]
+    fn test_wait_for_key_no_press() {
+        let mut emu = Emu::new();
+        load_and_tick(&mut emu, &[0xF00A]);
+        // Should have re-decremented pc back to same opcode
+        assert_eq!(emu.pc, START_ADDR);
+    }
+
+    #[test]
+    fn test_wait_for_key_pressed() {
+        let mut emu = Emu::new();
+        emu.keypress(3, true);
+        load_and_tick(&mut emu, &[0xFA0A]);
+        assert_eq!(emu.v_reg[0xA], 3);
+        assert_eq!(emu.pc, START_ADDR + 2);
+    }
+
+    // --- 0xDXYN: draw sprite ---
+    #[test]
+    fn test_draw_sprite_no_collision() {
+        let mut emu = Emu::new();
+        // Put a simple 1-row sprite (0xFF) at RAM[0x300]
+        emu.ram[0x300] = 0xFF;
+        // I=0x300, V0=0, V1=0, draw 1 row
+        let program: Vec<u16> = vec![0xA300, 0x6000, 0x6100, 0xD011];
+        load_and_tick(&mut emu, &program);
+        // 8 pixels at row 0 should be set
+        for i in 0..8 {
+            assert_eq!(emu.screen[i], 1, "pixel {i} should be set");
+        }
+        assert_eq!(emu.v_reg[VF], 0, "no collision expected");
+    }
+
+    #[test]
+    fn test_draw_sprite_collision() {
+        let mut emu = Emu::new();
+        emu.ram[0x300] = 0xFF;
+        let program: Vec<u16> = vec![0xA300, 0x6000, 0x6100, 0xD011, 0xD011];
+        load_and_tick(&mut emu, &program);
+        // Drawing twice should clear pixels and set VF=1
+        for i in 0..8 {
+            assert_eq!(emu.screen[i], 0, "pixel {i} should be cleared");
+        }
+        assert_eq!(emu.v_reg[VF], 1, "collision expected");
+    }
+
+    // --- reset ---
+    #[test]
+    fn test_reset() {
+        let mut emu = Emu::new();
+        emu.v_reg[0] = 42;
+        emu.pc = 0x500;
+        emu.reset();
+        assert_eq!(emu.pc, START_ADDR);
+        assert_eq!(emu.v_reg[0], 0);
+    }
+
+    // --- get_display ---
+    #[test]
+    fn test_get_display_length() {
+        let emu = Emu::new();
+        assert_eq!(emu.get_display().len(), SCREEN_WIDTH * SCREEN_HEIGHT);
+    }
+}

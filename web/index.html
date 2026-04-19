@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CHIP-8 Emulator</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 24px;
+      gap: 16px;
+    }
+
+    h1 { font-size: 1.4rem; letter-spacing: 0.15em; color: #a0c4ff; }
+
+    #canvas-wrap {
+      border: 2px solid #444;
+      line-height: 0;
+    }
+
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+    }
+
+    #controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    label { font-size: 0.85rem; color: #aaa; }
+
+    input[type="file"] { color: #e0e0e0; font-family: monospace; }
+
+    button {
+      background: #2a2a4a;
+      color: #a0c4ff;
+      border: 1px solid #555;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-family: monospace;
+      font-size: 0.85rem;
+    }
+    button:hover { background: #3a3a6a; }
+
+    #status { font-size: 0.8rem; color: #888; }
+
+    #keymap {
+      font-size: 0.75rem;
+      color: #666;
+      text-align: center;
+      line-height: 1.7;
+    }
+  </style>
+</head>
+<body>
+  <h1>CHIP-8</h1>
+
+  <div id="canvas-wrap">
+    <canvas id="screen"></canvas>
+  </div>
+
+  <div id="controls">
+    <label>ROM: <input type="file" id="rom-input" accept=".ch8,.rom,.bin" /></label>
+    <button id="reset-btn">Reset</button>
+    <button id="pause-btn">Pause</button>
+  </div>
+
+  <div id="status">Load a ROM to start.</div>
+
+  <div id="keymap">
+    Keymap &nbsp;|&nbsp;
+    1 2 3 4 &rarr; 1 2 3 C &nbsp;|&nbsp;
+    Q W E R &rarr; 4 5 6 D &nbsp;|&nbsp;
+    A S D F &rarr; 7 8 9 E &nbsp;|&nbsp;
+    Z X C V &rarr; A 0 B F
+  </div>
+
+  <script type="module">
+    import init, { EmuWasm } from "./pkg/wasm.js";
+
+    const TICKS_PER_FRAME = 10;
+    const SCALE = 15;
+
+    // Key mapping: physical key → CHIP-8 index
+    const KEY_MAP = {
+      "1": 0x1, "2": 0x2, "3": 0x3, "4": 0xC,
+      "q": 0x4, "w": 0x5, "e": 0x6, "r": 0xD,
+      "a": 0x7, "s": 0x8, "d": 0x9, "f": 0xE,
+      "z": 0xA, "x": 0x0, "c": 0xB, "v": 0xF,
+    };
+
+    await init();
+
+    const canvas = document.getElementById("screen");
+    const ctx = canvas.getContext("2d");
+    const status = document.getElementById("status");
+
+    const W = EmuWasm.screen_width();
+    const H = EmuWasm.screen_height();
+
+    canvas.width  = W * SCALE;
+    canvas.height = H * SCALE;
+
+    let emu = new EmuWasm();
+    let romData = null;
+    let running = false;
+    let paused  = false;
+    let animId  = null;
+
+    function drawScreen() {
+      const display = emu.get_display();
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#fff";
+      for (let i = 0; i < display.length; i++) {
+        if (display[i]) {
+          const x = (i % W) * SCALE;
+          const y = Math.floor(i / W) * SCALE;
+          ctx.fillRect(x, y, SCALE, SCALE);
+        }
+      }
+    }
+
+    function loop() {
+      if (!paused) {
+        for (let t = 0; t < TICKS_PER_FRAME; t++) emu.tick();
+        emu.tick_timers();
+        drawScreen();
+      }
+      animId = requestAnimationFrame(loop);
+    }
+
+    function startLoop() {
+      if (animId !== null) cancelAnimationFrame(animId);
+      animId = requestAnimationFrame(loop);
+    }
+
+    function loadRom(data) {
+      emu.reset();
+      emu.load_rom(data);
+      running = true;
+      paused = false;
+      document.getElementById("pause-btn").textContent = "Pause";
+      status.textContent = "Running.";
+      startLoop();
+    }
+
+    // File input
+    document.getElementById("rom-input").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        romData = new Uint8Array(ev.target.result);
+        loadRom(romData);
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
+    // Reset
+    document.getElementById("reset-btn").addEventListener("click", () => {
+      if (!romData) return;
+      loadRom(romData);
+    });
+
+    // Pause/Resume
+    document.getElementById("pause-btn").addEventListener("click", () => {
+      if (!running) return;
+      paused = !paused;
+      document.getElementById("pause-btn").textContent = paused ? "Resume" : "Pause";
+      status.textContent = paused ? "Paused." : "Running.";
+    });
+
+    // Keyboard input
+    document.addEventListener("keydown", (e) => {
+      const idx = KEY_MAP[e.key.toLowerCase()];
+      if (idx !== undefined) emu.keypress(idx, true);
+    });
+    document.addEventListener("keyup", (e) => {
+      const idx = KEY_MAP[e.key.toLowerCase()];
+      if (idx !== undefined) emu.keypress(idx, false);
+    });
+
+    // Draw empty screen initially
+    drawScreen();
+  </script>
+</body>
+</html>

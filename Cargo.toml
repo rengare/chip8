@@ -2,6 +2,8 @@
 members = [
     "chip8_core",
     "desktop",
+    "wasm",
+    "xtask",
 ]
 resolver = "2"
 
